@@ -1,0 +1,51 @@
+{
+  "name": "se-2",
+  "version": "0.0.1",
+  "private": true,
+  "workspaces": {
+    "packages": [
+      "packages/*"
+    ]
+  },
+  "scripts": {
+    "agora:dev": "yarn workspace my-project dev",
+    "agora:sync-abi": "yarn workspace @se-2/hardhat sync-frontend",
+    "compile": "yarn hardhat:compile",
+    "backend:test": "cd packages/backend && python3 -m pytest tests/ -q --ignore=tests/integration",
+    "backend:test:unit": "cd packages/backend && python3 -m pytest tests/ -q --ignore=tests/integration",
+    "backend:test:integration": "cd packages/backend && python3 -m pytest tests/integration/ -v",
+    "backend:test:all": "cd packages/backend && python3 -m pytest tests/ -v",
+    "deploy:arc-testnet": "yarn workspace @se-2/hardhat deploy",
+    "format": "yarn next:format && yarn hardhat:format",
+    "hardhat:check-types": "yarn workspace @se-2/hardhat check-types",
+    "hardhat:clean": "yarn workspace @se-2/hardhat clean",
+    "hardhat:compile": "yarn workspace @se-2/hardhat compile",
+    "hardhat:flatten": "yarn workspace @se-2/hardhat flatten",
+    "hardhat:format": "yarn workspace @se-2/hardhat format",
+    "hardhat:integration:gas-sponsored": "yarn workspace @se-2/hardhat integration:gas-sponsored",
+    "hardhat:test:arc-testnet": "yarn workspace @se-2/hardhat test:arc-testnet",
+    "hardhat:hardhat-verify": "yarn workspace @se-2/hardhat hardhat-verify",
+    "hardhat:lint": "yarn workspace @se-2/hardhat lint",
+    "hardhat:test:testnet": "yarn workspace @se-2/hardhat test:testnet",
+    "hardhat:test": "yarn hardhat:test:testnet",
+    "hardhat:verify": "yarn workspace @se-2/hardhat verify",
+    "ipfs": "yarn workspace @se-2/nextjs ipfs",
+    "lint": "yarn next:lint && yarn hardhat:lint",
+    "next:build": "yarn workspace @se-2/nextjs build",
+    "next:check-types": "yarn workspace @se-2/nextjs check-types",
+    "next:format": "yarn workspace @se-2/nextjs format",
+    "next:lint": "yarn workspace @se-2/nextjs lint",
+    "next:serve": "yarn workspace @se-2/nextjs serve",
+    "start": "yarn workspace @se-2/nextjs dev",
+    "test": "yarn backend:test",
+    "test:all": "yarn hardhat:test:arc-testnet && yarn backend:test:all",
+    "vercel": "yarn workspace @se-2/nextjs vercel",
+    "vercel:login": "yarn workspace @se-2/nextjs vercel:login",
+    "vercel:yolo": "yarn workspace @se-2/nextjs vercel:yolo",
+    "verify": "yarn hardhat:verify"
+  },
+  "packageManager": "yarn@3.2.3",
+  "engines": {
+    "node": ">=20.18.3"
+  }
+}

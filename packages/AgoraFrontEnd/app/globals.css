@@ -1,0 +1,251 @@
+@import 'tailwindcss';
+@import 'tw-animate-css';
+
+@custom-variant dark (&:is(.dark *));
+
+/* Premium Agora Theme - Olive Green & Silver */
+:root {
+  /* Light sage/cream background */
+  --background: oklch(0.97 0.008 140);
+  --foreground: oklch(0.22 0.03 145);
+  
+  /* Cards with subtle green tint */
+  --card: oklch(0.98 0.006 140);
+  --card-foreground: oklch(0.22 0.03 145);
+  
+  --popover: oklch(0.98 0.006 140);
+  --popover-foreground: oklch(0.22 0.03 145);
+  
+  /* Olive green primary */
+  --primary: oklch(0.45 0.08 140);
+  --primary-foreground: oklch(0.98 0.006 140);
+  
+  /* Muted sage tones */
+  --secondary: oklch(0.92 0.015 140);
+  --secondary-foreground: oklch(0.32 0.04 145);
+  
+  --muted: oklch(0.90 0.012 140);
+  --muted-foreground: oklch(0.50 0.02 145);
+  
+  /* Silver accent */
+  --accent: oklch(0.70 0.01 240);
+  --accent-foreground: oklch(0.22 0.03 145);
+  
+  --destructive: oklch(0.55 0.18 25);
+  --destructive-foreground: oklch(0.98 0.006 140);
+  
+  --border: oklch(0.88 0.015 140);
+  --input: oklch(0.92 0.012 140);
+  --ring: oklch(0.50 0.06 140);
+  
+  /* Chart colors - olive & silver palette */
+  --chart-1: oklch(0.50 0.08 140);
+  --chart-2: oklch(0.70 0.01 240);
+  --chart-3: oklch(0.40 0.06 145);
+  --chart-4: oklch(0.60 0.05 135);
+  --chart-5: oklch(0.55 0.02 200);
+  
+  /* Success - brighter green */
+  --success: oklch(0.55 0.14 145);
+  --success-foreground: oklch(0.98 0.006 140);
+  
+  --radius: 0.75rem;
+  
+  --sidebar: oklch(0.95 0.01 140);
+  --sidebar-foreground: oklch(0.22 0.03 145);
+  --sidebar-primary: oklch(0.45 0.08 140);
+  --sidebar-primary-foreground: oklch(0.98 0.006 140);
+  --sidebar-accent: oklch(0.90 0.012 140);
+  --sidebar-accent-foreground: oklch(0.32 0.04 145);
+  --sidebar-border: oklch(0.88 0.015 140);
+  --sidebar-ring: oklch(0.50 0.06 140);
+}
+
+.dark {
+  /* Deep olive-tinted charcoal */
+  --background: oklch(0.16 0.02 145);
+  --foreground: oklch(0.92 0.01 140);
+  
+  --card: oklch(0.20 0.02 145);
+  --card-foreground: oklch(0.92 0.01 140);
+  
+  --popover: oklch(0.20 0.02 145);
+  --popover-foreground: oklch(0.92 0.01 140);
+  
+  /* Lighter olive primary in dark mode */
+  --primary: oklch(0.65 0.10 140);
+  --primary-foreground: oklch(0.16 0.02 145);
+  
+  --secondary: oklch(0.26 0.02 145);
+  --secondary-foreground: oklch(0.88 0.01 140);
+  
+  --muted: oklch(0.28 0.02 145);
+  --muted-foreground: oklch(0.62 0.02 140);
+  
+  /* Silver accent in dark */
+  --accent: oklch(0.75 0.02 240);
+  --accent-foreground: oklch(0.16 0.02 145);
+  
+  --destructive: oklch(0.50 0.16 25);
+  --destructive-foreground: oklch(0.92 0.01 140);
+  
+  --border: oklch(0.30 0.02 145);
+  --input: oklch(0.26 0.02 145);
+  --ring: oklch(0.60 0.08 140);
+  
+  --chart-1: oklch(0.65 0.10 140);
+  --chart-2: oklch(0.75 0.02 240);
+  --chart-3: oklch(0.50 0.06 145);
+  --chart-4: oklch(0.60 0.08 135);
+  --chart-5: oklch(0.55 0.03 200);
+  
+  --success: oklch(0.58 0.12 145);
+  --success-foreground: oklch(0.16 0.02 145);
+  
+  --sidebar: oklch(0.18 0.02 145);
+  --sidebar-foreground: oklch(0.92 0.01 140);
+  --sidebar-primary: oklch(0.65 0.10 140);
+  --sidebar-primary-foreground: oklch(0.16 0.02 145);
+  --sidebar-accent: oklch(0.26 0.02 145);
+  --sidebar-accent-foreground: oklch(0.88 0.01 140);
+  --sidebar-border: oklch(0.30 0.02 145);
+  --sidebar-ring: oklch(0.60 0.08 140);
+}
+
+@theme inline {
+  --font-sans: 'Geist', 'Geist Fallback';
+  --font-mono: 'Geist Mono', 'Geist Mono Fallback';
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+  
+  /* Smooth scrolling */
+  html {
+    scroll-behavior: smooth;
+  }
+}
+
+/* Clean animations - subtle and refined */
+@keyframes fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.animate-fade-up {
+  animation: fade-up 0.5s ease-out forwards;
+}
+
+.animate-fade-in {
+  animation: fade-in 0.4s ease-out forwards;
+}
+
+/* Stagger delays */
+.stagger-1 { animation-delay: 0.05s; }
+.stagger-2 { animation-delay: 0.1s; }
+.stagger-3 { animation-delay: 0.15s; }
+.stagger-4 { animation-delay: 0.2s; }
+.stagger-5 { animation-delay: 0.25s; }
+.stagger-6 { animation-delay: 0.3s; }
+
+/* Glass effect */
+.glass {
+  background: rgba(255, 255, 255, 0.7);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+}
+
+.dark .glass {
+  background: rgba(30, 28, 26, 0.8);
+}
+
+/* Premium text gradient - olive to silver */
+.text-gradient {
+  background: linear-gradient(135deg, oklch(0.50 0.08 140) 0%, oklch(0.72 0.02 240) 50%, oklch(0.50 0.08 140) 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* Hover lift effect */
+.hover-lift {
+  transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1), box-shadow 0.3s ease;
+}
+
+.hover-lift:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 20px 40px rgba(0, 0, 0, 0.08);
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: oklch(0.60 0.04 140 / 0.3);
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: oklch(0.50 0.06 140 / 0.5);
+}

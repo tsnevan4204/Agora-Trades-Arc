@@ -1,0 +1,9 @@
+[tool.pytest.ini_options]
+# web3.py ships a pytest11 plugin ("pytest_ethereum") we don't use; it can import-break with
+# some eth-typing / web3 combos. Disable only that plugin.
+addopts = ["-p", "no:pytest_ethereum"]
+testpaths = ["tests"]
+markers = [
+    "integration: chain integration tests requiring a running local node",
+    "slow: tests that wait on real chain time or many txs",
+]

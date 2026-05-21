@@ -1,0 +1,89 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# OS / editor
+# ──────────────────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+.idea/
+.vscode/
+*.iml
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Secrets — never commit
+# ──────────────────────────────────────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+!env.example
+*.pem
+*.key
+
+# Google Cloud / Firebase service-account credentials
+*-service-account*.json
+agora-*.json
+google-credentials*.json
+
+# Cursor / agent transcript exports — may contain pasted RPC URLs or keys.
+# Review and rename (e.g. docs/dev-notes.md) before committing if you want them.
+CURSOR_CHAT.md
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Node / Yarn (Berry node-modules linker)
+# ──────────────────────────────────────────────────────────────────────────────
+node_modules/
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/sdks
+!.yarn/versions
+.yarn/install-state.gz
+.yarn/cache
+.yarn/unplugged
+.yarn/build-state.yml
+yarn-error.log
+npm-debug.log*
+pnpm-debug.log*
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Next.js (frontend)
+# ──────────────────────────────────────────────────────────────────────────────
+packages/AgoraFrontEnd/.next/
+packages/AgoraFrontEnd/out/
+packages/AgoraFrontEnd/tsconfig.tsbuildinfo
+packages/AgoraFrontEnd/.turbo/
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Hardhat (smart contracts)
+# ──────────────────────────────────────────────────────────────────────────────
+packages/hardhat/artifacts/
+packages/hardhat/cache/
+packages/hardhat/typechain-types/
+packages/hardhat/coverage/
+packages/hardhat/coverage.json
+# Keep `deployments/` checked in so frontend + backend can read deployed addresses;
+# uncomment the next line if you'd rather treat them as build artifacts.
+# packages/hardhat/deployments/
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Python backend
+# ──────────────────────────────────────────────────────────────────────────────
+packages/backend/.venv/
+packages/backend/**/__pycache__/
+packages/backend/.pytest_cache/
+packages/backend/.mypy_cache/
+packages/backend/.ruff_cache/
+*.pyc
+*.pyo
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Misc build outputs / logs
+# ──────────────────────────────────────────────────────────────────────────────
+*.log
+logs/
+dist/
+build/
+coverage/
+.tsbuildinfo
