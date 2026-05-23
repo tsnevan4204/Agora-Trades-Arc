@@ -61,14 +61,50 @@ const deployYourContract: DeployFunction = async function (hre: HardhatRuntimeEn
     autoMine: true,
   });
 
+  const ZERO = "0x0000000000000000000000000000000000000000";
+
   const configuredManager = (await read("OutcomeToken1155", "manager")) as string;
-  if (configuredManager === "0x0000000000000000000000000000000000000000") {
+  if (configuredManager === ZERO) {
     await execute("OutcomeToken1155", { from: deployer, log: true }, "setManager", manager.address);
   }
 
   const configuredExchange = (await read("OutcomeToken1155", "exchange")) as string;
-  if (configuredExchange === "0x0000000000000000000000000000000000000000") {
+  if (configuredExchange === ZERO) {
     await execute("OutcomeToken1155", { from: deployer, log: true }, "setExchange", exchange.address);
+  }
+
+  // Post-deploy consistency check. OutcomeToken1155.setManager/setExchange can
+  // only be called once (subsequent calls revert with __AlreadySet). If we
+  // redeploy Manager or Exchange without also redeploying OutcomeToken1155,
+  // the token keeps trusting the stale addresses and every split/merge/redeem
+  // reverts with OutcomeToken1155__OnlyManager(). Fail loudly here instead of
+  // shipping a broken set of contracts to the frontend.
+  const finalManager = ((await read("OutcomeToken1155", "manager")) as string).toLowerCase();
+  const finalExchange = ((await read("OutcomeToken1155", "exchange")) as string).toLowerCase();
+  const expectedManager = manager.address.toLowerCase();
+  const expectedExchange = exchange.address.toLowerCase();
+
+  const managerOk = finalManager === expectedManager;
+  const exchangeOk = finalExchange === expectedExchange;
+
+  if (!managerOk || !exchangeOk) {
+    console.error("\n❌ OutcomeToken1155 wiring is out of sync with the deployed Manager/Exchange:");
+    if (!managerOk) {
+      console.error(`   token.manager()  = ${finalManager}`);
+      console.error(`   expected manager = ${expectedManager}`);
+    }
+    if (!exchangeOk) {
+      console.error(`   token.exchange()  = ${finalExchange}`);
+      console.error(`   expected exchange = ${expectedExchange}`);
+    }
+    console.error(
+      "\nOutcomeToken1155 can only have its manager/exchange set once. To recover,\n" +
+        `delete deployments/${network}/OutcomeToken1155.json (and ideally the\n` +
+        "PredictionMarketManager + Exchange artifacts too) and re-run `yarn deploy`.\n" +
+        "Any existing on-chain markets created via the stale Factory/Manager are\n" +
+        "stranded; you'll need to recreate them through the admin flow.\n",
+    );
+    throw new Error("OutcomeToken1155 wiring mismatch — refusing to sync stale addresses to frontend.");
   }
 
   console.log("Deployed forwarder:", forwarder.address);

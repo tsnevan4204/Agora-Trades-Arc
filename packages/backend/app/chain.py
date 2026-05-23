@@ -137,6 +137,27 @@ class CreateMarketsResult:
     create_market_txs: list[str]
 
 
+def validate_close_time_unix(close_time_unix: int, *, w3: Web3 | None = None) -> None:
+    """MarketFactory.createEvent requires closeTime > block.timestamp."""
+    if close_time_unix <= 0:
+        raise ValueError("closeTimeUnix must be a positive unix timestamp")
+    if w3 is None:
+        if not settings.rpc_url:
+            raise RuntimeError("Missing RPC_URL")
+        w3 = _web3_for_rpc(settings.rpc_url)
+    chain_now = int(w3.eth.get_block("latest")["timestamp"])
+    if close_time_unix <= chain_now:
+        from datetime import datetime, timezone
+
+        close_iso = datetime.fromtimestamp(close_time_unix, tz=timezone.utc).isoformat()
+        now_iso = datetime.fromtimestamp(chain_now, tz=timezone.utc).isoformat()
+        raise ValueError(
+            f"Market close time must be after the current chain time. "
+            f"You sent {close_iso} (unix {close_time_unix}) but the chain is at {now_iso} (unix {chain_now}). "
+            f"Pick a future close time in the admin form."
+        )
+
+
 def create_event_and_markets(
     title: str,
     category: str,
@@ -155,6 +176,7 @@ def create_event_and_markets(
 
     if w3 is None:
         w3 = _web3_for_rpc(settings.rpc_url)
+    validate_close_time_unix(close_time_unix, w3=w3)
     acct = w3.eth.account.from_key(_normalize_pk(settings.factory_owner_private_key))
     factory = w3.eth.contract(
         address=Web3.to_checksum_address(settings.factory_address),

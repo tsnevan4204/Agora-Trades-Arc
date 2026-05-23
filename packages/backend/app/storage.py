@@ -125,10 +125,25 @@ _cached_backend: StorageBackend | None = None
 
 
 def _gcs_credentials_ready() -> bool:
+    """Detect whether GCS auth is available without trying to construct a client.
+
+    Two paths produce real credentials in our deployments:
+      1. Local dev — `GOOGLE_APPLICATION_CREDENTIALS` points at a JSON key.
+      2. Cloud Run / GCE / GKE — Application Default Credentials are
+         injected by the runtime metadata server. The conventional signal
+         for "we're on GCP" is the presence of any of `K_SERVICE` (Cloud
+         Run / Cloud Functions Gen2), `GAE_SERVICE` (App Engine), or
+         `GOOGLE_CLOUD_PROJECT`.
+
+    If neither path applies we fall back to LocalFilesystemStore so tests
+    and offline dev keep working without auth.
+    """
     cred = os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "").strip()
-    if not cred:
-        return False
-    return Path(cred).expanduser().is_file()
+    if cred and Path(cred).expanduser().is_file():
+        return True
+    if os.getenv("K_SERVICE") or os.getenv("GAE_SERVICE") or os.getenv("GOOGLE_CLOUD_PROJECT"):
+        return True
+    return False
 
 
 def _build_store() -> StorageBackend:

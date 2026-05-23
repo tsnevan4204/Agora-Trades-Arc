@@ -1,0 +1,39 @@
+# Keep the build context small and never ship secrets into the image.
+#
+# Cloud Build uploads the build context every time, so anything large or
+# secret here is both a performance and a security problem.
+
+# Python local state
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+*.egg-info/
+
+# Local data lake mirror — not for prod
+data/
+
+# Tests aren't needed at runtime; they pull in fixtures and chain helpers
+# we don't want shipping in the image.
+tests/
+
+# Local IDE / OS noise
+.vscode/
+.idea/
+.DS_Store
+
+# Anything that looks like a credential or env file. We pass secrets via
+# Cloud Run / Secret Manager, never via the image.
+*.json
+!app/contracts/manifest.json
+*.pem
+*.key
+.env
+.env.*
+secrets/

@@ -48,22 +48,23 @@ export function WalletApprovals({ className }: { className?: string }) {
   const { switchChainAsync, isPending: switching } = useSwitchChain()
   const { writeContractAsync, data: pendingTx } = useWriteContract()
   const { isLoading: confirming } = useWaitForTransactionReceipt({ hash: pendingTx })
-  const [submitting, setSubmitting] = useState<'manager' | 'exchange' | null>(null)
-
-  if (!isConnected) return null
+  const [submitting, setSubmitting] = useState<'manager' | 'exchange' | 'outcome' | null>(null)
 
   const onArc = chainId === arcTestnet.id
 
-  // Resolve manager/exchange addresses — only safe to do once we're on Arc.
-  let manager: { address: `0x${string}` } | null = null
-  let exchange: { address: `0x${string}` } | null = null
+  // Resolve manager/exchange/outcome token — only safe to do once we're on Arc.
+  let manager: { address: `0x${string}`; abi: readonly unknown[] } | null = null
+  let exchange: { address: `0x${string}`; abi: readonly unknown[] } | null = null
+  let outcomeToken: { address: `0x${string}`; abi: readonly unknown[] } | null = null
   if (onArc) {
     try {
       manager = mustGetContract(chainId, 'PredictionMarketManager')
       exchange = mustGetContract(chainId, 'Exchange')
+      outcomeToken = mustGetContract(chainId, 'OutcomeToken1155')
     } catch {
       manager = null
       exchange = null
+      outcomeToken = null
     }
   }
 
@@ -73,7 +74,7 @@ export function WalletApprovals({ className }: { className?: string }) {
     functionName: 'allowance',
     args: address && manager ? [address, manager.address] : undefined,
     chainId: arcTestnet.id,
-    query: { enabled: Boolean(onArc && manager && address) },
+    query: { enabled: Boolean(isConnected && onArc && manager && address) },
   })
   const { data: allowanceEx } = useReadContract({
     address: arcUsdcContract.address,
@@ -81,14 +82,26 @@ export function WalletApprovals({ className }: { className?: string }) {
     functionName: 'allowance',
     args: address && exchange ? [address, exchange.address] : undefined,
     chainId: arcTestnet.id,
-    query: { enabled: Boolean(onArc && exchange && address) },
+    query: { enabled: Boolean(isConnected && onArc && exchange && address) },
+  })
+
+  const { data: outcomeApproved } = useReadContract({
+    address: outcomeToken?.address,
+    abi: outcomeToken?.abi,
+    functionName: 'isApprovedForAll',
+    args: address && exchange ? [address, exchange.address] : undefined,
+    chainId: arcTestnet.id,
+    query: { enabled: Boolean(isConnected && onArc && outcomeToken && exchange && address) },
   })
 
   const HALF_MAX = maxUint256 / 2n
   const needsManager = !manager || typeof allowanceMgr !== 'bigint' || allowanceMgr < HALF_MAX
   const needsExchange = !exchange || typeof allowanceEx !== 'bigint' || allowanceEx < HALF_MAX
-  const allSet = onArc && manager && exchange && !needsManager && !needsExchange
+  const needsOutcome = !outcomeToken || outcomeApproved !== true
+  const allSet =
+    onArc && manager && exchange && outcomeToken && !needsManager && !needsExchange && !needsOutcome
 
+  if (!isConnected) return null
   if (allSet) return null
 
   // ── Wrong network state ───────────────────────────────────────────────────
@@ -139,7 +152,7 @@ export function WalletApprovals({ className }: { className?: string }) {
     )
   }
 
-  if (!manager || !exchange) {
+  if (!manager || !exchange || !outcomeToken) {
     return (
       <section
         className={cn(
@@ -159,7 +172,7 @@ export function WalletApprovals({ className }: { className?: string }) {
     )
   }
 
-  const approve = async (
+  const approveUsdc = async (
     spender: `0x${string}`,
     role: 'manager' | 'exchange',
     label: string,
@@ -190,7 +203,35 @@ export function WalletApprovals({ className }: { className?: string }) {
     }
   }
 
-  const busy = (role: 'manager' | 'exchange') =>
+  const approveOutcomeForExchange = async () => {
+    if (!exchange || !outcomeToken) return
+    setSubmitting('outcome')
+    try {
+      const onArcNow = await ensureArcWalletChain(config)
+      if (!onArcNow) {
+        toast.error('Switch to Arc Testnet first', {
+          description: arcChainMismatchMessage(chainId),
+        })
+        return
+      }
+      await writeContractAsync({
+        address: outcomeToken.address,
+        abi: outcomeToken.abi,
+        chainId: arcTestnet.id,
+        functionName: 'setApprovalForAll',
+        args: [exchange.address, true],
+      })
+      toast.success('Outcome token approval submitted')
+    } catch (e: any) {
+      toast.error('Outcome token approval failed', {
+        description: e?.shortMessage ?? String(e?.message ?? e),
+      })
+    } finally {
+      setSubmitting(null)
+    }
+  }
+
+  const busy = (role: 'manager' | 'exchange' | 'outcome') =>
     submitting === role || (submitting === null && confirming)
 
   return (
@@ -204,12 +245,11 @@ export function WalletApprovals({ className }: { className?: string }) {
         <span className="text-lg">🔑</span>
         <div>
           <p className="text-sm font-semibold text-primary">
-            One-time setup — approve USDC for the protocol
+            One-time wallet setup
           </p>
           <p className="text-xs text-muted-foreground mt-0.5 leading-relaxed">
-            Standard ERC-20 approval. You only do this once per wallet —
-            it applies to <strong>every</strong> market on this deployment,
-            not just the current one.
+            Approve USDC and outcome tokens so you can split shares, post offers,
+            and fill orders. You only do this once per wallet on this deployment.
           </p>
         </div>
       </div>
@@ -221,15 +261,23 @@ export function WalletApprovals({ className }: { className?: string }) {
           desc="Lets the manager pull USDC when you split into YES/NO shares."
           done={!needsManager}
           busy={busy('manager')}
-          onClick={() => void approve(manager.address, 'manager', 'Manager')}
+          onClick={() => void approveUsdc(manager.address, 'manager', 'Manager')}
         />
         <ApprovalRow
           step="②"
-          title="Approve Exchange"
-          desc="Lets the exchange pull USDC when you fill another trader's offer."
+          title="Approve Exchange (USDC)"
+          desc="USDC for filling sell-side offers and posting buy-side offers."
           done={!needsExchange}
           busy={busy('exchange')}
-          onClick={() => void approve(exchange.address, 'exchange', 'Exchange')}
+          onClick={() => void approveUsdc(exchange.address, 'exchange', 'Exchange')}
+        />
+        <ApprovalRow
+          step="③"
+          title="Approve Exchange (outcome tokens)"
+          desc="YES/NO shares for posting sell offers and filling buy-side offers."
+          done={!needsOutcome}
+          busy={busy('outcome')}
+          onClick={() => void approveOutcomeForExchange()}
         />
       </div>
     </section>

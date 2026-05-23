@@ -9,6 +9,7 @@ import { useAccount, useEnsName, useDisconnect } from 'wagmi'
 
 const navLinks = [
   { href: '/markets', label: 'Markets' },
+  { href: '/portfolio', label: 'Portfolio' },
   { href: '#features', label: 'Features' },
   { href: '#how-it-works', label: 'How It Works' },
   { href: '#data', label: 'Data' },
@@ -94,7 +95,7 @@ export function Navbar() {
                 <span>Welcome, <span className="font-medium text-foreground">{displayName}</span></span>
               </button>
               <Button className="text-sm bg-primary hover:bg-primary/90 transition-all duration-300 hover:shadow-lg" asChild>
-                <Link href="/trade">Trade</Link>
+                <Link href="/markets">Trade</Link>
               </Button>
             </>
           ) : (
@@ -103,7 +104,7 @@ export function Navbar() {
                 <Link href="/signin">Sign In</Link>
               </Button>
               <Button className="text-sm bg-primary hover:bg-primary/90 transition-all duration-300 hover:shadow-lg" asChild>
-                <Link href="/trade">Launch App</Link>
+                <Link href="/markets">Launch App</Link>
               </Button>
             </>
           )}
@@ -149,7 +150,7 @@ export function Navbar() {
                   <span>Welcome, <span className="font-medium">{displayName}</span></span>
                 </div>
                 <Button className="w-full justify-center" asChild>
-                  <Link href="/trade" onClick={() => setIsMobileMenuOpen(false)}>Trade</Link>
+                  <Link href="/markets" onClick={() => setIsMobileMenuOpen(false)}>Trade</Link>
                 </Button>
                 <Button variant="ghost" className="w-full justify-center text-muted-foreground" onClick={() => { disconnect(); setIsMobileMenuOpen(false) }}>
                   Disconnect
@@ -161,7 +162,7 @@ export function Navbar() {
                   <Link href="/signin">Sign In</Link>
                 </Button>
                 <Button className="w-full justify-center" asChild>
-                  <Link href="/trade">Launch App</Link>
+                  <Link href="/markets">Launch App</Link>
                 </Button>
               </>
             )}

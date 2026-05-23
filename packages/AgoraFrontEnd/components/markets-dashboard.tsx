@@ -4,17 +4,32 @@ import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { useReadContract, useReadContracts, useAccount, useConnect, useDisconnect } from 'wagmi'
 import { ConnectButton } from '@rainbow-me/rainbowkit'
-import { ArrowUpRight, BarChart3, Clock, Loader2, Search, TrendingUp } from 'lucide-react'
+import {
+  ArrowUpRight,
+  BarChart3,
+  Bitcoin,
+  Clock,
+  Cpu,
+  DollarSign,
+  Loader2,
+  Search,
+  Tag,
+  TrendingUp,
+} from 'lucide-react'
 import { Input } from '@/components/ui/input'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { cn } from '@/lib/utils'
-import { factoryMarketReadContracts, parseMarketsFromMulticall } from '@/lib/markets-from-chain'
 import {
-  getCuratedMeta,
-  CATEGORY_COLORS,
-  type CuratedMarket,
-} from '@/lib/curated-markets'
+  factoryMarketReadContracts,
+  factoryEventReadContracts,
+  managerResolutionReadContracts,
+  parseMarketsFromMulticall,
+  parseEventsFromMulticall,
+  parseResolutionsFromMulticall,
+  type DiscoveredEvent,
+  type MarketResolution,
+} from '@/lib/markets-from-chain'
 import { mustGetContract } from '@/lib/contracts'
 import { WalletApprovals } from '@/components/wallet-approvals'
 import { walletConnectProjectId } from '@/lib/env'
@@ -24,11 +39,24 @@ import { useWalletChainId } from '@/hooks/use-wallet-chain-id'
 const ALL_CATEGORIES = ['All', 'Macro', 'Earnings', 'Crypto', 'Tech'] as const
 const PAGE_SIZE = 6
 
-type EnrichedMarket = {
+type GroupMarket = {
   id: number
   question: string
+  status: 'Open' | 'Resolved'
+  winningOutcome: 'YES' | 'NO' | null
+}
+
+type EventGroup = {
+  eventId: bigint
+  /** Normalised display category, e.g. "Earnings". May be empty if the chain stored no category. */
+  category: string
+  /** Lowercase raw category string from chain, used for filtering. */
+  categoryRaw: string
+  title: string
   closeTime: number
-  meta: CuratedMarket | undefined
+  markets: GroupMarket[]
+  /** 'none' = no markets resolved · 'partial' = some · 'all' = every market in the event is resolved */
+  resolutionStage: 'none' | 'partial' | 'all'
 }
 
 function formatCloseDate(ts: number): string {
@@ -37,60 +65,157 @@ function formatCloseDate(ts: number): string {
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
 }
 
-function MarketCard({ market }: { market: EnrichedMarket }) {
-  const colorClass = market.meta
-    ? (CATEGORY_COLORS[market.meta.category] ?? 'text-muted-foreground bg-muted')
-    : 'text-muted-foreground bg-muted'
+/** Title-case a freeform category string ("earnings" → "Earnings"). */
+function prettyCategory(raw: string): string {
+  const s = (raw ?? '').trim()
+  if (!s) return ''
+  return s.charAt(0).toUpperCase() + s.slice(1).toLowerCase()
+}
+
+/**
+ * Pick a Lucide icon based on the category. Falls back to a generic tag icon
+ * so the visual hierarchy stays consistent across mixed event types.
+ */
+function CategoryIcon({ category, className }: { category: string; className?: string }) {
+  const c = category.toLowerCase()
+  if (c === 'earnings') return <DollarSign className={className} />
+  if (c === 'crypto') return <Bitcoin className={className} />
+  if (c === 'tech') return <Cpu className={className} />
+  if (c === 'macro') return <TrendingUp className={className} />
+  return <Tag className={className} />
+}
+
+const CATEGORY_COLOR: Record<string, string> = {
+  Macro: 'text-primary bg-primary/10',
+  Earnings: 'text-success bg-success/10',
+  Crypto: 'text-accent bg-accent/10',
+  Tech: 'text-primary/70 bg-primary/5',
+}
+
+function EventCard({ group }: { group: EventGroup }) {
+  const colorClass = CATEGORY_COLOR[group.category] ?? 'text-muted-foreground bg-muted'
+  const isFullyResolved = group.resolutionStage === 'all'
+  const isPartiallyResolved = group.resolutionStage === 'partial'
 
   return (
-    <Link
-      href={`/trade?marketId=${market.id}`}
-      className="group relative bg-card rounded-2xl p-6 border border-border/50 hover:border-primary/40 hover:shadow-xl hover:shadow-primary/10 hover:bg-primary/[0.02] transition-all duration-300 flex flex-col gap-4 cursor-pointer"
+    <div
+      className={cn(
+        'group relative bg-card rounded-2xl p-6 border border-border/50 transition-all duration-300 flex flex-col gap-4',
+        // Resolved events are visually de-emphasised but still clickable so
+        // winners can navigate in to redeem from the trade page.
+        isFullyResolved
+          ? 'opacity-70 grayscale-[0.4] hover:opacity-90 hover:grayscale-0 hover:border-muted-foreground/40'
+          : 'hover:border-primary/40 hover:shadow-xl hover:shadow-primary/10',
+      )}
     >
-      {/* Header */}
+      {/* Header: icon + category */}
       <div className="flex items-start justify-between gap-3">
-        <span className="text-2xl">{market.meta?.emoji ?? '📋'}</span>
-        <ArrowUpRight className="w-4 h-4 text-muted-foreground opacity-0 group-hover:opacity-100 transition-opacity shrink-0 mt-0.5" />
-      </div>
-
-      {/* Category badge */}
-      <div>
-        <span className={cn('text-xs font-semibold uppercase tracking-wider px-2 py-0.5 rounded-full', colorClass)}>
-          {market.meta?.category ?? 'Community'}
-        </span>
-      </div>
-
-      {/* Question */}
-      <p className="font-semibold text-sm leading-snug group-hover:text-primary transition-colors flex-1">
-        {market.question}
-      </p>
-
-      {/* Tags */}
-      <div className="flex flex-wrap gap-1.5 mt-auto">
-        {market.meta?.tags.map((tag) => (
-          <Badge key={tag} variant="secondary" className="text-xs font-normal">
-            {tag}
+        <div className="flex items-center gap-2">
+          <span
+            className={cn(
+              'w-9 h-9 rounded-xl flex items-center justify-center',
+              colorClass,
+            )}
+          >
+            <CategoryIcon category={group.category} className="w-4 h-4" />
+          </span>
+          {group.category && (
+            <span
+              className={cn(
+                'text-xs font-semibold uppercase tracking-wider px-2 py-0.5 rounded-full',
+                colorClass,
+              )}
+            >
+              {group.category}
+            </span>
+          )}
+        </div>
+        <div className="flex items-center gap-1.5 shrink-0">
+          {isFullyResolved && (
+            <Badge
+              variant="outline"
+              className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground border-muted-foreground/40"
+            >
+              Resolved
+            </Badge>
+          )}
+          {isPartiallyResolved && (
+            <Badge
+              variant="outline"
+              className="text-[10px] font-semibold uppercase tracking-wider text-amber-500 border-amber-500/40"
+            >
+              Partial
+            </Badge>
+          )}
+          <Badge variant="outline" className="text-[10px] font-normal text-muted-foreground">
+            Event #{group.eventId.toString()}
           </Badge>
-        ))}
-        <Badge variant="outline" className="text-xs font-normal text-muted-foreground">
-          #{market.id}
-        </Badge>
+        </div>
       </div>
 
-      {/* Resolve date + CTA */}
+      {/* Event title */}
+      <p className="font-semibold text-base leading-snug">{group.title || 'Untitled event'}</p>
+
+      {/* Sub-markets */}
+      <ul className="flex flex-col gap-1.5">
+        {group.markets.map((m) => (
+          <li key={m.id}>
+            <Link
+              href={`/trade?marketId=${m.id}`}
+              className={cn(
+                'group/row flex items-center justify-between gap-3 rounded-lg border border-border/40 bg-background/40 px-3 py-2 transition-all',
+                m.status === 'Resolved'
+                  ? 'hover:border-muted-foreground/40'
+                  : 'hover:border-primary/40 hover:bg-primary/[0.04]',
+              )}
+            >
+              <span
+                className={cn(
+                  'text-sm leading-snug truncate',
+                  m.status === 'Resolved'
+                    ? 'text-muted-foreground line-through decoration-muted-foreground/40 decoration-1'
+                    : 'group-hover/row:text-primary transition-colors',
+                )}
+              >
+                {m.question}
+              </span>
+              <span className="flex items-center gap-1.5 shrink-0 text-xs text-muted-foreground">
+                {m.status === 'Resolved' && m.winningOutcome && (
+                  <span
+                    className={cn(
+                      'text-[10px] font-semibold uppercase tracking-wider px-1.5 py-0.5 rounded-md border',
+                      m.winningOutcome === 'YES'
+                        ? 'text-success border-success/40 bg-success/5'
+                        : 'text-destructive border-destructive/40 bg-destructive/5',
+                    )}
+                  >
+                    {m.winningOutcome} won
+                  </span>
+                )}
+                <span className="font-mono">#{m.id}</span>
+                {m.status !== 'Resolved' && (
+                  <ArrowUpRight className="w-3.5 h-3.5 opacity-0 group-hover/row:opacity-100 transition-opacity" />
+                )}
+              </span>
+            </Link>
+          </li>
+        ))}
+      </ul>
+
+      {/* Footer */}
       <div className="pt-2 border-t border-border/40 flex items-center justify-between text-xs text-muted-foreground">
-        <span className="flex items-center gap-1 group-hover:text-primary transition-colors">
+        <span className="flex items-center gap-1">
           <BarChart3 className="w-3 h-3" />
-          Open order book
+          {group.markets.length} market{group.markets.length === 1 ? '' : 's'}
         </span>
-        {market.closeTime > 0 && (
+        {group.closeTime > 0 && (
           <span className="flex items-center gap-1">
             <Clock className="w-3 h-3" />
-            Resolves {formatCloseDate(market.closeTime)}
+            {isFullyResolved ? 'Closed' : 'Resolves'} {formatCloseDate(group.closeTime)}
           </span>
         )}
       </div>
-    </Link>
+    </div>
   )
 }
 
@@ -108,6 +233,19 @@ export function MarketsDashboard() {
     try {
       if (chainId !== arcTestnet.id) return null
       return mustGetContract(chainId, 'MarketFactory')
+    } catch {
+      return null
+    }
+  }, [chainId])
+
+  // We also need the Manager ABI to fetch each market's resolution status
+  // (auto-generated mapping getter). Resolved markets are still listed, just
+  // visually de-emphasised so users with winning shares can still navigate
+  // in and redeem.
+  const managerContract = useMemo(() => {
+    try {
+      if (chainId !== arcTestnet.id) return null
+      return mustGetContract(chainId, 'PredictionMarketManager')
     } catch {
       return null
     }
@@ -133,14 +271,76 @@ export function MarketsDashboard() {
     query: { enabled: marketReadContracts.length > 0 },
   })
 
-  const isLoading =
-    (Boolean(contracts) && nextPending) ||
-    (typeof nextMarketId === 'bigint' && nextMarketId > 0n && rowsPending)
-
   const allMarkets = useMemo(
     () => parseMarketsFromMulticall(typeof nextMarketId === 'bigint' ? nextMarketId : undefined, marketRows),
     [nextMarketId, marketRows],
   )
+
+  // Unique eventIds discovered in markets, in first-seen order.
+  const uniqueEventIds = useMemo(() => {
+    const seen = new Set<string>()
+    const out: bigint[] = []
+    for (const m of allMarkets) {
+      const key = m.eventId.toString()
+      if (seen.has(key)) continue
+      seen.add(key)
+      out.push(m.eventId)
+    }
+    return out
+  }, [allMarkets])
+
+  const eventReadContracts = useMemo(
+    () =>
+      contracts && uniqueEventIds.length > 0
+        ? factoryEventReadContracts(contracts.address, contracts.abi, uniqueEventIds)
+        : [],
+    [contracts, uniqueEventIds],
+  )
+
+  const { data: eventRows, isPending: eventsPending } = useReadContracts({
+    contracts: eventReadContracts,
+    query: { enabled: eventReadContracts.length > 0 },
+  })
+
+  const discoveredEvents = useMemo(
+    () => parseEventsFromMulticall(uniqueEventIds, eventRows),
+    [uniqueEventIds, eventRows],
+  )
+
+  // Resolution status multicall keyed by Manager.markets(id). Reuses the
+  // factory's `nextMarketId` since market ids are dense from 0..n-1.
+  const resolutionReadContracts = useMemo(
+    () =>
+      managerContract && typeof nextMarketId === 'bigint' && nextMarketId > 0n
+        ? managerResolutionReadContracts(
+            managerContract.address,
+            managerContract.abi,
+            nextMarketId,
+          )
+        : [],
+    [managerContract, nextMarketId],
+  )
+
+  const { data: resolutionRows, isPending: resolutionsPending } = useReadContracts({
+    contracts: resolutionReadContracts,
+    query: { enabled: resolutionReadContracts.length > 0 },
+  })
+
+  const resolutionByMarketId = useMemo(() => {
+    const arr = parseResolutionsFromMulticall(
+      typeof nextMarketId === 'bigint' ? nextMarketId : undefined,
+      resolutionRows,
+    )
+    const map = new Map<number, MarketResolution>()
+    for (const r of arr) map.set(r.marketId, r)
+    return map
+  }, [nextMarketId, resolutionRows])
+
+  const isLoading =
+    (Boolean(contracts) && nextPending) ||
+    (typeof nextMarketId === 'bigint' && nextMarketId > 0n && rowsPending) ||
+    (eventReadContracts.length > 0 && eventsPending) ||
+    (resolutionReadContracts.length > 0 && resolutionsPending)
 
   useEffect(() => {
     if (typeof nextMarketId === 'bigint') {
@@ -149,34 +349,83 @@ export function MarketsDashboard() {
   }, [nextMarketId])
 
   useEffect(() => {
-    console.debug('[markets] allMarkets from chain:', allMarkets.map(m => ({ id: m.id, question: m.question })))
+    console.debug('[markets] allMarkets from chain:', allMarkets.map(m => ({ id: m.id, question: m.question, eventId: m.eventId.toString() })))
   }, [allMarkets])
 
   useEffect(() => {
     console.debug('[markets] chainId:', chainId, '| contracts loaded:', Boolean(contracts))
   }, [chainId, contracts])
 
-  const enrichedMarkets: EnrichedMarket[] = useMemo(
-    () =>
-      allMarkets
-        .map((m) => ({ id: m.id, question: m.question, closeTime: m.closeTime, meta: getCuratedMeta(m.id) }))
-        .sort((a, b) => a.id - b.id),
-    [allMarkets],
-  )
+  /**
+   * Group markets by their on-chain eventId, then attach the real event
+   * metadata (title / category / closeTime) fetched separately. We sort
+   * markets within each event by id (creation order) and sort events newest-first.
+   */
+  const eventGroups: EventGroup[] = useMemo(() => {
+    if (allMarkets.length === 0) return []
+    const eventMeta = new Map<string, DiscoveredEvent>()
+    for (const e of discoveredEvents) eventMeta.set(e.eventId.toString(), e)
+
+    const buckets = new Map<string, EventGroup>()
+    for (const m of allMarkets) {
+      const key = m.eventId.toString()
+      const res = resolutionByMarketId.get(m.id)
+      const subMarket: GroupMarket = {
+        id: m.id,
+        question: m.question,
+        status: res?.status ?? 'Open',
+        winningOutcome: res?.winningOutcome ?? null,
+      }
+      const bucket = buckets.get(key)
+      if (bucket) {
+        bucket.markets.push(subMarket)
+        if (m.closeTime > bucket.closeTime) bucket.closeTime = m.closeTime
+        continue
+      }
+      const meta = eventMeta.get(key)
+      const categoryRaw = (meta?.category ?? '').toLowerCase()
+      buckets.set(key, {
+        eventId: m.eventId,
+        title: meta?.title ?? `Event ${key}`,
+        category: prettyCategory(categoryRaw),
+        categoryRaw,
+        closeTime: meta?.closeTime || m.closeTime,
+        markets: [subMarket],
+        resolutionStage: 'none', // computed below once all markets are collected
+      })
+    }
+
+    const groups = Array.from(buckets.values())
+    for (const g of groups) {
+      g.markets.sort((a, b) => a.id - b.id)
+      const resolved = g.markets.filter((m) => m.status === 'Resolved').length
+      g.resolutionStage =
+        resolved === 0 ? 'none' : resolved === g.markets.length ? 'all' : 'partial'
+    }
+    // Newest event first; ties broken by lowest market id (stable).
+    groups.sort((a, b) => {
+      if (a.eventId === b.eventId) return 0
+      return a.eventId < b.eventId ? 1 : -1
+    })
+    return groups
+  }, [allMarkets, discoveredEvents, resolutionByMarketId])
 
   const filtered = useMemo(() => {
-    let list = enrichedMarkets
-    if (activeCategory !== 'All') list = list.filter((m) => m.meta?.category === activeCategory)
+    let list = eventGroups
+    if (activeCategory !== 'All') {
+      const want = activeCategory.toLowerCase()
+      list = list.filter((g) => g.categoryRaw === want)
+    }
     if (search.trim()) {
       const q = search.toLowerCase()
       list = list.filter(
-        (m) =>
-          m.question.toLowerCase().includes(q) ||
-          m.meta?.tags.some((t) => t.toLowerCase().includes(q)),
+        (g) =>
+          g.title.toLowerCase().includes(q) ||
+          g.markets.some((m) => m.question.toLowerCase().includes(q)),
       )
     }
     return list
-  }, [enrichedMarkets, activeCategory, search])
+  }, [eventGroups, activeCategory, search])
 
   const visible = filtered.slice(0, visibleCount)
   const hasMore = visibleCount < filtered.length
@@ -197,6 +446,9 @@ export function MarketsDashboard() {
           </div>
 
           <div className="flex items-center gap-2">
+            <Button variant="ghost" size="sm" asChild>
+              <Link href="/portfolio">Portfolio</Link>
+            </Button>
             <Button variant="ghost" size="sm" asChild>
               <Link href="/analytics">Analytics</Link>
             </Button>
@@ -287,7 +539,7 @@ export function MarketsDashboard() {
           <div className="text-center h-64 flex items-center justify-center text-muted-foreground">
             Connect to Circle Arc Testnet to view markets.
           </div>
-        ) : enrichedMarkets.length === 0 ? (
+        ) : eventGroups.length === 0 ? (
           <div className="text-center py-16 px-6 rounded-xl border border-dashed border-border bg-card/30 space-y-4">
             <div className="mx-auto w-12 h-12 rounded-full bg-primary/10 flex items-center justify-center">
               <TrendingUp className="w-6 h-6 text-primary" />
@@ -307,13 +559,13 @@ export function MarketsDashboard() {
           </div>
         ) : filtered.length === 0 ? (
           <div className="text-center h-64 flex items-center justify-center text-muted-foreground">
-            No markets match your search.
+            No events match your search.
           </div>
         ) : (
           <>
             <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-6 mb-8">
-              {visible.map((m) => (
-                <MarketCard key={m.id} market={m} />
+              {visible.map((g) => (
+                <EventCard key={g.eventId.toString()} group={g} />
               ))}
             </div>
 
@@ -325,7 +577,7 @@ export function MarketsDashboard() {
                   onClick={() => setVisibleCount((c) => c + PAGE_SIZE)}
                   className="px-10"
                 >
-                  Load more markets ({filtered.length - visibleCount} remaining)
+                  Load more events ({filtered.length - visibleCount} remaining)
                 </Button>
               </div>
             )}

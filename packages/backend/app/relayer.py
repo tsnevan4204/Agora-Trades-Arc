@@ -111,12 +111,27 @@ def relay_forward_request(request: RelayForwardRequest, *, w3: Web3 | None = Non
         print(f"[relay] SUCCESS: tx={tx_hash.hex()}")
         return RelayResult(ok=True, tx_hash=_normalize_tx_hash(tx_hash.hex()))
     except Exception as exc:
-        err = str(exc).lower()
+        err = str(exc)
+        err_lower = err.lower()
+        print(f"[relay] EXCEPTION: {exc!r}")
         reason = "Relay transaction failed"
-        if "insufficient funds" in err:
+        if "insufficient funds" in err_lower:
             reason = "Relayer wallet insufficient funds for gas"
-        elif "nonce too low" in err or "replacement transaction" in err:
+        elif "nonce too low" in err_lower or "replacement transaction" in err_lower:
             reason = "Nonce conflict; wait for pending transaction"
-        elif "could not connect" in err or "timeout" in err or "timed out" in err:
+        elif "could not connect" in err_lower or "timeout" in err_lower or "timed out" in err_lower:
             reason = "RPC connection error"
+        elif "0x1425ea42" in err_lower or "failedinnercall" in err_lower:
+            # ERC2771Forwarder bubbles FailedInnerCall() when the target reverts; the
+            # underlying reason is swallowed by the forwarder's low-level call. The
+            # frontend should simulate the inner call to surface the real reason.
+            reason = (
+                "Inner call reverted (forwarder hides the reason). "
+                "Common causes: insufficient USDC balance, missing USDC allowance "
+                "for the manager/exchange, missing outcome-token approval, or market closed."
+            )
+        elif "execution reverted" in err_lower or "revert" in err_lower:
+            reason = f"On-chain call would revert: {err[:400]}"
+        elif "forward request verification failed" in err_lower:
+            reason = "Forward request verification failed"
         return RelayResult(ok=False, reason=reason)

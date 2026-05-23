@@ -167,7 +167,7 @@ export function OrderBookDemo() {
 
             <div className="flex flex-wrap gap-4">
               <Button className="bg-primary hover:bg-primary/90" asChild>
-                <Link href="/trade">Start Trading</Link>
+                <Link href="/markets">Start Trading</Link>
               </Button>
               <Button variant="outline" asChild>
                 <a href={`${backendBaseUrl}/docs`} target="_blank" rel="noopener noreferrer">

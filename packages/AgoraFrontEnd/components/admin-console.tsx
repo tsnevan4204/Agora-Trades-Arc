@@ -1,9 +1,19 @@
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
-import { useAccount } from 'wagmi'
+import { useAccount, useReadContracts } from 'wagmi'
+import { keccak256, toBytes } from 'viem'
 import { toast } from 'sonner'
+
+import { arcTestnet } from '@/lib/chains/arcTestnet'
+import { mustGetContract } from '@/lib/contracts'
+import {
+  managerResolutionReadContracts,
+  parseResolutionsFromMulticall,
+  type MarketResolution,
+} from '@/lib/markets-from-chain'
+import { useWalletChainId } from '@/hooks/use-wallet-chain-id'
 import {
   CheckCircle,
   ChevronDown,
@@ -28,11 +38,22 @@ import { Badge } from '@/components/ui/badge'
 import { Separator } from '@/components/ui/separator'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs'
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
+import {
+  fetchAdminMe,
   fetchProposals,
   fetchProposal,
+  getAdminToken,
+  postAdminLogin,
   postApproveProposal,
   postRejectProposal,
   postResolveMarkets,
+  setAdminToken,
   type ProposalMarketSpecPayload,
   type ProposalRecord,
 } from '@/lib/agora-api'
@@ -52,6 +73,137 @@ const DEFAULT_OUTCOMES_JSON = `{
   "1": "NO"
 }`
 
+/**
+ * Decode the small set of HTML entities the propose form serialises into
+ * `suggestedRanges` (e.g. `&gt;`, `&lt;`, `&amp;`). Keeps things readable when
+ * the admin sees the prefilled question.
+ */
+function decodeEntities(s: string): string {
+  return s
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&nbsp;/g, ' ')
+}
+
+/**
+ * Build a default Markets JSON array from the raw proposal so the admin sees
+ * one market per `suggestedRange` instead of a generic example. The spec hash
+ * is deterministic per (proposalId, index, question) — non-zero and unique
+ * enough for the factory to accept it; the admin can still edit before approving.
+ */
+function buildMarketsJsonFromProposal(p: ProposalRecord): string {
+  const ranges = Array.isArray(p.suggestedRanges)
+    ? (p.suggestedRanges as unknown[]).map((r) => String(r))
+    : []
+
+  const decoded = ranges
+    .map((r) => decodeEntities(r).trim())
+    .filter((r) => r.length > 0)
+
+  if (decoded.length === 0) return DEFAULT_MARKETS_JSON
+
+  const markets = decoded.map((question, i) => {
+    const seed = `${p.proposalId}:${i}:${question}`
+    const specHash = keccak256(toBytes(seed))
+    return {
+      question,
+      resolutionSpecHash: specHash,
+      resolutionSpecURI: `ipfs://agora/proposals/${p.proposalId}/markets/${i}`,
+    }
+  })
+
+  return JSON.stringify(markets, null, 2)
+}
+
+/**
+ * Parse a binary question / range like:
+ *   "EPS > $1.60?"       → { kind: 'gt', n: 1.60 }
+ *   "EPS < $1.40?"       → { kind: 'lt', n: 1.40 }
+ *   "EPS $1.50–$1.60?"   → { kind: 'between', lo: 1.50, hi: 1.60 }
+ *   "Rate >= 5.25%?"     → { kind: 'gte', n: 5.25 }
+ *
+ * Strips currency symbols (`$`), percent signs, commas, the trailing `?`, and
+ * common HTML entities (`&gt;`, `&lt;`). Returns `unknown` for questions whose
+ * truthiness can't be derived from a single numeric value (e.g. yes/no
+ * categorical questions); those default to NO and the admin can override.
+ */
+type ParsedQuestion =
+  | { kind: 'gt' | 'gte' | 'lt' | 'lte' | 'eq'; n: number }
+  | { kind: 'between'; lo: number; hi: number }
+  | { kind: 'unknown' }
+
+function parseQuestion(qRaw: string): ParsedQuestion {
+  const s = decodeEntities(qRaw)
+    .replace(/[$%,?]/g, '')
+    .trim()
+
+  // Range first: "1.50–1.60", "1.50-1.60", "1.50 to 1.60", em-dash.
+  const between = s.match(/(-?\d+(?:\.\d+)?)\s*(?:–|—|-|to)\s*(-?\d+(?:\.\d+)?)/i)
+  if (between) {
+    const a = parseFloat(between[1])
+    const b = parseFloat(between[2])
+    if (!Number.isNaN(a) && !Number.isNaN(b)) {
+      return { kind: 'between', lo: Math.min(a, b), hi: Math.max(a, b) }
+    }
+  }
+  const gte = s.match(/(?:>=|≥|>\s*=)\s*(-?\d+(?:\.\d+)?)/)
+  if (gte) return { kind: 'gte', n: parseFloat(gte[1]) }
+  const lte = s.match(/(?:<=|≤|<\s*=)\s*(-?\d+(?:\.\d+)?)/)
+  if (lte) return { kind: 'lte', n: parseFloat(lte[1]) }
+  const gt = s.match(/>\s*(-?\d+(?:\.\d+)?)/)
+  if (gt) return { kind: 'gt', n: parseFloat(gt[1]) }
+  const lt = s.match(/<\s*(-?\d+(?:\.\d+)?)/)
+  if (lt) return { kind: 'lt', n: parseFloat(lt[1]) }
+  const eq = s.match(/=\s*(-?\d+(?:\.\d+)?)/)
+  if (eq) return { kind: 'eq', n: parseFloat(eq[1]) }
+  return { kind: 'unknown' }
+}
+
+/**
+ * Decide YES / NO for a single binary market when the reported numeric value
+ * is known. Returns `null` for questions we can't auto-evaluate.
+ *
+ * Between buckets are inclusive on both ends — most ranges admins write are
+ * non-overlapping in practice (e.g. "$1.40–$1.50?", "$1.50–$1.60?"), and on
+ * the rare boundary value the admin can flip the toggle before submitting.
+ */
+function evaluateForValue(parsed: ParsedQuestion, value: number): 'YES' | 'NO' | null {
+  switch (parsed.kind) {
+    case 'gt':
+      return value > parsed.n ? 'YES' : 'NO'
+    case 'gte':
+      return value >= parsed.n ? 'YES' : 'NO'
+    case 'lt':
+      return value < parsed.n ? 'YES' : 'NO'
+    case 'lte':
+      return value <= parsed.n ? 'YES' : 'NO'
+    case 'between':
+      return value >= parsed.lo && value <= parsed.hi ? 'YES' : 'NO'
+    case 'eq':
+      return value === parsed.n ? 'YES' : 'NO'
+    default:
+      return null
+  }
+}
+
+function formatDateTimeLocal(d: Date): string {
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
+}
+
+/** Default close = 7 days from now, for `<input type="datetime-local">`. */
+function defaultCloseTimeLocal(): string {
+  return formatDateTimeLocal(new Date(Date.now() + 7 * 24 * 60 * 60 * 1000))
+}
+
+/** Earliest selectable close = now (browser + on-chain require future close). */
+function minCloseTimeLocal(): string {
+  return formatDateTimeLocal(new Date())
+}
+
 // ─── Login wall ─────────────────────────────────────────────────────────────
 
 function LoginWall({ onAuth }: { onAuth: () => void }) {
@@ -65,15 +217,20 @@ function LoginWall({ onAuth }: { onAuth: () => void }) {
     e.preventDefault()
     setLoading(true)
     setError('')
-    // Small artificial delay for UX
-    await new Promise((r) => setTimeout(r, 400))
-    if (username === 'username' && password === 'password') {
-      sessionStorage.setItem('agora_admin_auth', '1')
-      onAuth()
-    } else {
-      setError('Invalid credentials. Please try again.')
-    }
+    // Trade credentials for a backend-signed bearer. `postAdminLogin` caches
+    // the token in sessionStorage on success; subsequent admin API calls
+    // pick it up automatically via the `adminHeaders` helper.
+    const res = await postAdminLogin({ username: username.trim(), password })
     setLoading(false)
+    if (res.error) {
+      setError(
+        res.error.toLowerCase().includes('not configured')
+          ? 'Admin auth not configured on backend. Set ADMIN_USERNAME / ADMIN_PASSWORD / ADMIN_SESSION_SECRET in .env and restart.'
+          : res.error || 'Invalid credentials. Please try again.',
+      )
+      return
+    }
+    onAuth()
   }
 
   return (
@@ -168,13 +325,29 @@ export function AdminConsole() {
   const [authChecked, setAuthChecked] = useState(false)
 
   useEffect(() => {
-    const saved = sessionStorage.getItem('agora_admin_auth')
-    if (saved === '1') setAuthenticated(true)
-    setAuthChecked(true)
+    // Validate any cached token against the backend before assuming the
+    // admin session is still good. `fetchAdminMe` returns null and clears
+    // the token on a 401, so an expired/forged token can't trick the UI
+    // into rendering the admin pages.
+    let cancelled = false
+    void (async () => {
+      const token = getAdminToken()
+      if (!token) {
+        if (!cancelled) setAuthChecked(true)
+        return
+      }
+      const me = await fetchAdminMe()
+      if (cancelled) return
+      setAuthenticated(Boolean(me))
+      setAuthChecked(true)
+    })()
+    return () => {
+      cancelled = true
+    }
   }, [])
 
   const handleLogout = () => {
-    sessionStorage.removeItem('agora_admin_auth')
+    setAdminToken(null)
     setAuthenticated(false)
   }
 
@@ -198,25 +371,179 @@ export function AdminConsole() {
   const [outcomesJson, setOutcomesJson] = useState(DEFAULT_OUTCOMES_JSON)
   const [resolveReason, setResolveReason] = useState('')
 
+  // Approved-proposal picker (resolution prefill).
+  const [approvedProposals, setApprovedProposals] = useState<ProposalRecord[]>([])
+  const [selectedApprovedId, setSelectedApprovedId] = useState<string>('')
+
+  // ── On-chain resolution status for approved proposals ──
+  // We need this both to (a) filter already-resolved events out of the dropdown
+  // so the admin can't double-resolve, and (b) re-render the post-resolve UI
+  // without a manual refresh. We read `PredictionMarketManager.markets(id)`
+  // for every market id referenced by any approved proposal.
+  const chainId = useWalletChainId()
+  const managerContract = useMemo(() => {
+    try {
+      if (chainId !== arcTestnet.id) return null
+      return mustGetContract(chainId, 'PredictionMarketManager')
+    } catch {
+      return null
+    }
+  }, [chainId])
+
+  // Flat, deduped list of (proposalId → marketIds) gathered from approved
+  // proposals' on-chain envelope. Order is preserved so we can map results
+  // back to (proposalId, marketId) without extra bookkeeping.
+  const approvedMarketIds = useMemo(() => {
+    const ids = new Set<number>()
+    for (const p of approvedProposals) {
+      const onChain = (p.onChain ?? {}) as { marketIds?: number[] }
+      if (Array.isArray(onChain.marketIds)) {
+        for (const m of onChain.marketIds) if (typeof m === 'number') ids.add(m)
+      }
+    }
+    return Array.from(ids).sort((a, b) => a - b)
+  }, [approvedProposals])
+
+  // Multicall returns one tuple per marketId. We translate the largest id
+  // into a synthetic `nextMarketId` so the existing parser can iterate from 0
+  // and we only look at the ids we care about.
+  const maxMarketId = approvedMarketIds.length > 0 ? approvedMarketIds[approvedMarketIds.length - 1] : -1
+  const resolutionReadContracts = useMemo(() => {
+    if (!managerContract || maxMarketId < 0) return []
+    return managerResolutionReadContracts(
+      managerContract.address,
+      managerContract.abi,
+      BigInt(maxMarketId + 1),
+    )
+  }, [managerContract, maxMarketId])
+
+  const { data: resolutionRows, refetch: refetchResolutionRows } = useReadContracts({
+    contracts: resolutionReadContracts,
+    query: {
+      enabled: resolutionReadContracts.length > 0,
+      // Re-poll every 8s so the dropdown self-heals after an external resolve.
+      refetchInterval: 8_000,
+    },
+  })
+
+  const resolutionByMarketId = useMemo(() => {
+    const arr = parseResolutionsFromMulticall(
+      maxMarketId >= 0 ? BigInt(maxMarketId + 1) : undefined,
+      resolutionRows,
+    )
+    const map = new Map<number, MarketResolution>()
+    for (const r of arr) map.set(r.marketId, r)
+    return map
+  }, [maxMarketId, resolutionRows])
+
+  /**
+   * `approved` ∩ `not-yet-resolved-on-chain`. An event is considered
+   * still-resolvable if at least one of its markets is still Open. Fully
+   * resolved events are hidden so the admin can't submit `resolve()` again
+   * (which would revert with `PredictionMarketManager__MarketResolved()`).
+   */
+  const unresolvedApprovedProposals = useMemo(() => {
+    if (resolutionByMarketId.size === 0) return approvedProposals
+    return approvedProposals.filter((p) => {
+      const onChain = (p.onChain ?? {}) as { marketIds?: number[] }
+      const mids = Array.isArray(onChain.marketIds) ? onChain.marketIds : []
+      if (mids.length === 0) return true
+      return mids.some((m) => (resolutionByMarketId.get(m)?.status ?? 'Open') === 'Open')
+    })
+  }, [approvedProposals, resolutionByMarketId])
+  // Map of marketId (string) → 'YES' | 'NO'. Drives the per-market toggles and
+  // the auto-derived Outcomes JSON. Source of truth once a proposal is picked.
+  const [outcomeByMarketId, setOutcomeByMarketId] = useState<Record<string, 'YES' | 'NO'>>({})
+  // Optional reported numeric value used to auto-fill the YES/NO toggles
+  // against the parsed `suggestedRanges` for the picked proposal.
+  const [reportedValue, setReportedValue] = useState('')
+
   useEffect(() => {
     setConfirmedBy((prev) => (prev === '' && address ? address : prev))
   }, [address])
 
-  const loadPendingProposals = async () => {
+  const loadProposals = async () => {
     setProposalsLoading(true)
     try {
-      const list = await fetchProposals('pending')
-      setPendingProposals(list)
-      if (list.length === 0) toast.info('No pending proposals found')
+      const [pending, approved] = await Promise.all([
+        fetchProposals('pending'),
+        fetchProposals('approved'),
+      ])
+      setPendingProposals(pending)
+      setApprovedProposals(approved)
+      // Seed the per-proposal Markets JSON from suggestedRanges, but never
+      // overwrite an entry the admin has already edited in this session.
+      setMarketsJsons((prev) => {
+        const next = { ...prev }
+        for (const p of pending) {
+          if (next[p.proposalId] === undefined) {
+            next[p.proposalId] = buildMarketsJsonFromProposal(p)
+          }
+        }
+        return next
+      })
+      if (pending.length === 0) toast.info('No pending proposals found')
     } finally {
       setProposalsLoading(false)
     }
   }
 
+  // Back-compat alias: existing call sites still use this name.
+  const loadPendingProposals = loadProposals
+
   // Auto-load on mount when authenticated
   useEffect(() => {
-    if (authenticated) void loadPendingProposals()
+    if (authenticated) void loadProposals()
   }, [authenticated]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Keep the Outcomes JSON textarea in sync whenever the per-market toggles
+  // change. The admin can still hand-edit the textarea afterward — it just
+  // gets overwritten next time they change a toggle or reported value.
+  useEffect(() => {
+    const keys = Object.keys(outcomeByMarketId)
+    if (keys.length === 0) return
+    setOutcomesJson(JSON.stringify(outcomeByMarketId, null, 2))
+  }, [outcomeByMarketId])
+
+  // When admin types a Reported value, auto-evaluate each market's question
+  // against it. Markets whose questions don't parse are left at NO.
+  useEffect(() => {
+    if (!selectedApprovedId) return
+    const proposal = approvedProposals.find((x) => x.proposalId === selectedApprovedId)
+    if (!proposal) return
+    const num = parseFloat(reportedValue)
+    if (Number.isNaN(num)) return
+
+    const ranges = Array.isArray(proposal.suggestedRanges)
+      ? proposal.suggestedRanges.map((r) => decodeEntities(String(r)))
+      : []
+    const onChain = (proposal.onChain ?? {}) as { marketIds?: number[] }
+    const mids = Array.isArray(onChain.marketIds) ? onChain.marketIds : []
+
+    const next: Record<string, 'YES' | 'NO'> = {}
+    for (let i = 0; i < mids.length; i++) {
+      const parsed = parseQuestion(ranges[i] ?? '')
+      next[String(mids[i])] = evaluateForValue(parsed, num) ?? 'NO'
+    }
+    setOutcomeByMarketId(next)
+  }, [reportedValue, selectedApprovedId, approvedProposals])
+
+  const onPickApprovedProposal = (pid: string) => {
+    setSelectedApprovedId(pid)
+    const proposal = approvedProposals.find((x) => x.proposalId === pid)
+    if (!proposal) return
+    const onChain = (proposal.onChain ?? {}) as {
+      eventId?: number
+      marketIds?: number[]
+    }
+    const mids = Array.isArray(onChain.marketIds) ? onChain.marketIds : []
+    if (typeof onChain.eventId === 'number') setEventId(String(onChain.eventId))
+    if (mids.length > 0) setResolveMarketIds(mids.join(', '))
+    const seeded: Record<string, 'YES' | 'NO'> = {}
+    for (const mid of mids) seeded[String(mid)] = 'NO'
+    setOutcomeByMarketId(seeded)
+    setReportedValue('')
+  }
 
   if (!authChecked) return null
 
@@ -228,7 +555,9 @@ export function AdminConsole() {
   const approve = async (pid: string) => {
     const by = confirmedBy.trim()
     if (!by) { toast.error('Set "Confirmed by" address'); return }
-    const mj = marketsJsons[pid] ?? DEFAULT_MARKETS_JSON
+    const proposal = pendingProposals.find((x) => x.proposalId === pid)
+    const fallbackJson = proposal ? buildMarketsJsonFromProposal(proposal) : DEFAULT_MARKETS_JSON
+    const mj = marketsJsons[pid] ?? fallbackJson
     const cl = closeLocals[pid] ?? ''
     let markets: ProposalMarketSpecPayload[]
     try {
@@ -239,6 +568,12 @@ export function AdminConsole() {
     }
     const t = cl ? Math.floor(new Date(cl).getTime() / 1000) : 0
     if (!t || Number.isNaN(t)) { toast.error('Set a valid close time'); return }
+    if (new Date(cl).getTime() <= Date.now()) {
+      toast.error('Close time must be in the future', {
+        description: 'The factory rejects past close times. Pick a date/time after now.',
+      })
+      return
+    }
     setActionLoadingId(pid)
     try {
       const res = await postApproveProposal(pid, { confirmedBy: by, closeTimeUnix: t, markets })
@@ -287,8 +622,58 @@ export function AdminConsole() {
     setActionLoadingId('resolve')
     try {
       const res = await postResolveMarkets(eid, { confirmedBy: by, marketIds: mids, outcomes, reason: resolveReason.trim() || null })
-      if (res.error) toast.error(res.error, { description: JSON.stringify(res.detail) })
-      else toast.success('Resolution submitted', { description: res.evidenceHash })
+
+      // The backend persists the resolution record + returns HTTP 200 even when
+      // the on-chain `resolve()` call fails (e.g. RESOLVER_PRIVATE_KEY missing,
+      // wallet not the on-chain resolver, market already resolved → revert).
+      // We have to inspect `res.onChain` to know whether anything actually
+      // landed on-chain — otherwise the admin sees a misleading "submitted"
+      // success and the resolved-event UI stays stale.
+      if (res.error) {
+        toast.error(res.error, { description: JSON.stringify(res.detail) })
+        return
+      }
+
+      const oc = res.onChain ?? {}
+      if (oc.skipped) {
+        toast.error('On-chain resolve skipped by backend', {
+          description: oc.reason ?? 'Set RESOLVER_PRIVATE_KEY, MANAGER_ADDRESS and RPC_URL on the backend.',
+        })
+        return
+      }
+      if (oc.overall === 'error') {
+        toast.error('On-chain resolve failed', { description: oc.error ?? 'Backend caught an exception during resolve().' })
+        return
+      }
+      if (oc.overall === 'failed' || oc.overall === 'partial_failure') {
+        const txs = oc.txRecords ?? []
+        const failed = txs.filter((r) => !r.ok)
+        const lines = failed
+          .slice(0, 3)
+          .map((r) => `#${r.market_id}: ${r.error ?? 'reverted'}`)
+          .join(' · ')
+        toast.error(
+          oc.overall === 'partial_failure'
+            ? `Only ${txs.length - failed.length}/${txs.length} markets resolved on-chain`
+            : 'All resolve() calls reverted on-chain',
+          { description: lines || 'See backend logs for details.' },
+        )
+        // Still refresh — the successful slice (if any) updated chain state.
+        await refetchResolutionRows()
+        return
+      }
+
+      // overall === 'confirmed'
+      toast.success('Resolution confirmed on-chain', {
+        description: res.evidenceHash ? res.evidenceHash.slice(0, 18) + '…' : undefined,
+      })
+      // Refresh on-chain status + the approved-proposals list so the picker
+      // and Outcomes JSON no longer reference the just-resolved markets.
+      await Promise.allSettled([refetchResolutionRows(), loadProposals()])
+      // Clear the selection so the next resolve starts clean.
+      setSelectedApprovedId('')
+      setOutcomeByMarketId({})
+      setReportedValue('')
     } finally {
       setActionLoadingId(null)
     }
@@ -320,6 +705,9 @@ export function AdminConsole() {
           </div>
           <Button variant="ghost" size="sm" asChild>
             <Link href="/trade">Trade</Link>
+          </Button>
+          <Button variant="ghost" size="sm" asChild>
+            <Link href="/portfolio">Portfolio</Link>
           </Button>
           <Button variant="ghost" size="sm" asChild>
             <Link href="/">Home</Link>
@@ -422,7 +810,7 @@ export function AdminConsole() {
             {pendingProposals.map((p) => {
               const isExpanded = expandedId === p.proposalId
               const isBusy = actionLoadingId === p.proposalId
-              const mj = marketsJsons[p.proposalId] ?? DEFAULT_MARKETS_JSON
+              const mj = marketsJsons[p.proposalId] ?? buildMarketsJsonFromProposal(p)
               const cl = closeLocals[p.proposalId] ?? ''
               const rr = rejectReasons[p.proposalId] ?? ''
 
@@ -434,7 +822,17 @@ export function AdminConsole() {
                   {/* Card header — always visible */}
                   <button
                     className="w-full flex items-start gap-4 p-5 text-left hover:bg-muted/30 transition-colors"
-                    onClick={() => setExpandedId(isExpanded ? null : p.proposalId)}
+                    onClick={() => {
+                      const next = isExpanded ? null : p.proposalId
+                      setExpandedId(next)
+                      if (next) {
+                        setCloseLocals((prev) =>
+                          prev[p.proposalId] !== undefined
+                            ? prev
+                            : { ...prev, [p.proposalId]: defaultCloseTimeLocal() },
+                        )
+                      }
+                    }}
                   >
                     <div className="flex-1 min-w-0 space-y-1">
                       <div className="flex items-center gap-2 flex-wrap">
@@ -493,12 +891,16 @@ export function AdminConsole() {
                           <Label className="text-xs text-muted-foreground">Market close time (local)</Label>
                           <Input
                             type="datetime-local"
-                            value={cl}
+                            value={cl || defaultCloseTimeLocal()}
+                            min={minCloseTimeLocal()}
                             onChange={(e) =>
                               setCloseLocals((prev) => ({ ...prev, [p.proposalId]: e.target.value }))
                             }
                             className="max-w-xs text-sm"
                           />
+                          <p className="text-[11px] text-muted-foreground">
+                            Must be after now — on-chain <code className="font-mono">createEvent</code> rejects past close times.
+                          </p>
                         </div>
                         <div className="space-y-1.5">
                           <Label className="text-xs text-muted-foreground">Markets JSON — array of market specs</Label>
@@ -509,6 +911,23 @@ export function AdminConsole() {
                             }
                             className="min-h-[120px] font-mono text-xs leading-relaxed"
                           />
+                          <div className="flex items-center justify-between">
+                            <p className="text-[11px] text-muted-foreground">
+                              Prefilled from <code className="font-mono">suggestedRanges</code>. Edit before approving if needed.
+                            </p>
+                            <button
+                              type="button"
+                              className="text-[11px] text-muted-foreground hover:text-foreground transition-colors underline underline-offset-2"
+                              onClick={() =>
+                                setMarketsJsons((prev) => ({
+                                  ...prev,
+                                  [p.proposalId]: buildMarketsJsonFromProposal(p),
+                                }))
+                              }
+                            >
+                              Reset to proposal
+                            </button>
+                          </div>
                         </div>
                         <Button
                           size="sm"
@@ -570,13 +989,82 @@ export function AdminConsole() {
                 </Badge>
               </div>
               <p className="text-xs text-muted-foreground leading-relaxed">
-                Submits final outcomes for the specified markets. Requires the resolver
-                environment on the backend server for on-chain settlement.
+                Pick an approved event, optionally enter the reported numeric value, then
+                review the YES/NO toggle for each market and submit. The backend records
+                the decision (with an evidence hash) and calls{' '}
+                <code className="text-[10px] bg-background/40 px-1 rounded">
+                  Manager.resolve()
+                </code>{' '}
+                for each market when the resolver wallet is configured.
               </p>
 
+              {/* ── Approved-proposal picker ── */}
+              <div className="space-y-1.5">
+                <Label className="text-xs text-muted-foreground">
+                  Approved event ({unresolvedApprovedProposals.length} unresolved · {approvedProposals.length} total)
+                </Label>
+                {approvedProposals.length === 0 ? (
+                  <p className="text-xs text-muted-foreground">
+                    No approved proposals found. Approve a proposal first, then come back.
+                  </p>
+                ) : unresolvedApprovedProposals.length === 0 ? (
+                  <p className="text-xs text-muted-foreground">
+                    All approved proposals are fully resolved on-chain. Approve a new event to
+                    resolve another market.
+                  </p>
+                ) : (
+                  <Select
+                    value={selectedApprovedId}
+                    onValueChange={onPickApprovedProposal}
+                  >
+                    <SelectTrigger className="w-full text-sm">
+                      <SelectValue placeholder="Choose an approved proposal…" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {unresolvedApprovedProposals.map((p) => {
+                        const oc = (p.onChain ?? {}) as {
+                          eventId?: number
+                          marketIds?: number[]
+                        }
+                        const eid =
+                          typeof oc.eventId === 'number' ? `Event #${oc.eventId}` : 'Event #?'
+                        const mids = Array.isArray(oc.marketIds) ? oc.marketIds : []
+                        // Annotate partially-resolved events so the admin can
+                        // see which markets they still need to call resolve()
+                        // for in the picker itself.
+                        const resolvedMids = mids.filter(
+                          (m) => resolutionByMarketId.get(m)?.status === 'Resolved',
+                        )
+                        const midsLabel =
+                          mids.length === 0
+                            ? ''
+                            : resolvedMids.length === 0
+                              ? ` · markets [${mids.join(', ')}]`
+                              : ` · markets [${mids
+                                  .map((m) =>
+                                    resolutionByMarketId.get(m)?.status === 'Resolved'
+                                      ? `${m}✓`
+                                      : String(m),
+                                  )
+                                  .join(', ')}]`
+                        return (
+                          <SelectItem key={p.proposalId} value={p.proposalId}>
+                            {p.title} — {eid}
+                            {midsLabel}
+                          </SelectItem>
+                        )
+                      })}
+                    </SelectContent>
+                  </Select>
+                )}
+              </div>
+
+              {/* ── Event ID / Market IDs (auto-filled, still editable) ── */}
               <div className="grid sm:grid-cols-2 gap-4">
                 <div className="space-y-1.5">
-                  <Label htmlFor="eid" className="text-xs text-muted-foreground">Event ID</Label>
+                  <Label htmlFor="eid" className="text-xs text-muted-foreground">
+                    Event ID
+                  </Label>
                   <Input
                     id="eid"
                     value={eventId}
@@ -599,17 +1087,140 @@ export function AdminConsole() {
                 </div>
               </div>
 
-              <div className="space-y-1.5">
-                <Label htmlFor="out" className="text-xs text-muted-foreground">
-                  Outcomes JSON — keys as string indices
-                </Label>
-                <Textarea
-                  id="out"
-                  value={outcomesJson}
-                  onChange={(e) => setOutcomesJson(e.target.value)}
-                  className="min-h-[120px] font-mono text-xs leading-relaxed"
-                />
-              </div>
+              {/* ── Per-market outcome table (only when a proposal is picked) ── */}
+              {selectedApprovedId &&
+                (() => {
+                  const proposal = approvedProposals.find(
+                    (x) => x.proposalId === selectedApprovedId,
+                  )
+                  if (!proposal) return null
+                  const onChain = (proposal.onChain ?? {}) as { marketIds?: number[] }
+                  const mids = Array.isArray(onChain.marketIds) ? onChain.marketIds : []
+                  const ranges = Array.isArray(proposal.suggestedRanges)
+                    ? proposal.suggestedRanges.map((r) => decodeEntities(String(r)))
+                    : []
+                  const reportedNum = parseFloat(reportedValue)
+                  const hasReportedNum = !Number.isNaN(reportedNum)
+
+                  return (
+                    <div className="space-y-3 rounded-lg border border-border bg-muted/20 p-4">
+                      <div className="space-y-1.5">
+                        <Label
+                          htmlFor="reported"
+                          className="text-xs text-muted-foreground"
+                        >
+                          Reported value (optional — auto-fills outcomes)
+                        </Label>
+                        <Input
+                          id="reported"
+                          value={reportedValue}
+                          onChange={(e) => setReportedValue(e.target.value)}
+                          placeholder="e.g. 1.55 for EPS, 5.25 for a rate, …"
+                          className="font-mono text-sm"
+                        />
+                        <p className="text-[10px] text-muted-foreground">
+                          Numbers strip <code>$</code>, <code>%</code>, and commas. Ranges
+                          like <code>$1.50–$1.60?</code> and comparators like{' '}
+                          <code>&gt; $1.60?</code> are auto-evaluated.
+                        </p>
+                      </div>
+
+                      <div className="space-y-2">
+                        <Label className="text-xs text-muted-foreground">
+                          Per-market outcome
+                        </Label>
+                        {mids.length === 0 ? (
+                          <p className="text-xs text-destructive">
+                            This approved proposal has no on-chain market IDs recorded.
+                          </p>
+                        ) : (
+                          <div className="divide-y divide-border rounded-md border border-border bg-background">
+                            {mids.map((mid, i) => {
+                              const q = ranges[i] ?? '(no question recorded)'
+                              const current = outcomeByMarketId[String(mid)] ?? 'NO'
+                              const parsed = parseQuestion(q)
+                              const isUnparseable = parsed.kind === 'unknown'
+                              const autoEval = hasReportedNum
+                                ? evaluateForValue(parsed, reportedNum)
+                                : null
+                              return (
+                                <div
+                                  key={mid}
+                                  className="flex items-center gap-3 px-3 py-2.5"
+                                >
+                                  <span className="text-xs font-mono text-muted-foreground shrink-0">
+                                    #{mid}
+                                  </span>
+                                  <span className="text-sm flex-1 min-w-0 truncate">
+                                    {q}
+                                  </span>
+                                  {hasReportedNum && autoEval && !isUnparseable && (
+                                    <Badge
+                                      variant="outline"
+                                      className="text-[10px] hidden sm:inline-flex shrink-0"
+                                    >
+                                      auto: {autoEval}
+                                    </Badge>
+                                  )}
+                                  {isUnparseable && hasReportedNum && (
+                                    <Badge
+                                      variant="outline"
+                                      className="text-[10px] hidden sm:inline-flex shrink-0 text-amber-500 border-amber-500/40"
+                                    >
+                                      manual
+                                    </Badge>
+                                  )}
+                                  <Select
+                                    value={current}
+                                    onValueChange={(v) =>
+                                      setOutcomeByMarketId((prev) => ({
+                                        ...prev,
+                                        [String(mid)]: v as 'YES' | 'NO',
+                                      }))
+                                    }
+                                  >
+                                    <SelectTrigger className="w-24 h-8 text-xs">
+                                      <SelectValue />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                      <SelectItem value="YES">YES</SelectItem>
+                                      <SelectItem value="NO">NO</SelectItem>
+                                    </SelectContent>
+                                  </Select>
+                                </div>
+                              )
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )
+                })()}
+
+              {/* ── Outcomes JSON — auto-derived but editable for power users ── */}
+              <details className="rounded-md border border-border bg-muted/20 group">
+                <summary className="flex items-center gap-2 px-3 py-2 cursor-pointer hover:bg-muted/40 select-none text-xs text-muted-foreground">
+                  <span className="font-medium">Outcomes JSON (advanced)</span>
+                  <span className="ml-auto text-[10px]">
+                    Auto-built from toggles above
+                  </span>
+                </summary>
+                <div className="p-3 space-y-2 border-t border-border">
+                  <Textarea
+                    id="out"
+                    value={outcomesJson}
+                    onChange={(e) => setOutcomesJson(e.target.value)}
+                    className="min-h-[100px] font-mono text-xs leading-relaxed"
+                  />
+                  <p className="text-[10px] text-muted-foreground">
+                    Keys are <span className="font-mono">marketId</span> strings, values
+                    are <span className="font-mono">"YES"</span> or{' '}
+                    <span className="font-mono">"NO"</span>. Editing here lets you submit a
+                    payload that diverges from the toggles, but the next toggle change
+                    will overwrite your edit.
+                  </p>
+                </div>
+              </details>
 
               <div className="space-y-1.5">
                 <Label htmlFor="rr" className="text-xs text-muted-foreground">
