@@ -32,6 +32,7 @@ import {
 } from '@/lib/markets-from-chain'
 import { mustGetContract } from '@/lib/contracts'
 import { WalletApprovals } from '@/components/wallet-approvals'
+import { NewsBanner } from '@/components/news-banner'
 import { walletConnectProjectId } from '@/lib/env'
 import { arcTestnet } from '@/lib/chains/arcTestnet'
 import { useWalletChainId } from '@/hooks/use-wallet-chain-id'
@@ -478,6 +479,9 @@ export function MarketsDashboard() {
           </div>
         </div>
       </div>
+
+      {/* News ticker — full-width below the sticky nav */}
+      <NewsBanner />
 
       <div className="container mx-auto px-6 py-12">
         {/* One-time wallet approvals (covers ALL markets) */}

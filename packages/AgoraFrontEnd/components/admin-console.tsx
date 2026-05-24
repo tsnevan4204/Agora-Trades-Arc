@@ -22,6 +22,7 @@ import {
   EyeOff,
   FileCheck,
   Gavel,
+  Lightbulb,
   Loader2,
   Lock,
   LogOut,
@@ -59,6 +60,8 @@ import {
 } from '@/lib/agora-api'
 import { backendBaseUrl } from '@/lib/env'
 import { cn } from '@/lib/utils'
+import { suggestResolutionDates, type SuggestedDate } from '@/lib/suggest-date'
+import type { NewsItem } from '@/app/api/news/route'
 
 const DEFAULT_MARKETS_JSON = `[
   {
@@ -350,6 +353,16 @@ export function AdminConsole() {
     setAdminToken(null)
     setAuthenticated(false)
   }
+
+  // ── News items for date suggestions (fetched once after auth) ──
+  const [newsItems, setNewsItems] = useState<NewsItem[]>([])
+  useEffect(() => {
+    if (!authenticated) return
+    fetch('/api/news')
+      .then((r) => r.json())
+      .then((d) => setNewsItems(d.items ?? []))
+      .catch(() => {/* non-fatal — suggestions just won't show */})
+  }, [authenticated])
 
   // ── Proposal list state ──
   const [pendingProposals, setPendingProposals] = useState<ProposalRecord[]>([])
@@ -898,6 +911,45 @@ export function AdminConsole() {
                             }
                             className="max-w-xs text-sm"
                           />
+                          {/* News-derived date suggestions */}
+                          {(() => {
+                            const suggestions: SuggestedDate[] = newsItems.length > 0
+                              ? suggestResolutionDates(p.title, newsItems)
+                              : []
+                            if (suggestions.length === 0) return null
+                            return (
+                              <div className="flex items-start gap-2 pt-1">
+                                <Lightbulb className="w-3.5 h-3.5 text-amber-500 mt-0.5 shrink-0" />
+                                <div className="space-y-1.5">
+                                  <p className="text-[11px] text-muted-foreground font-medium">
+                                    Suggested from news:
+                                  </p>
+                                  <div className="flex flex-wrap gap-1.5">
+                                    {suggestions.map((s, i) => (
+                                      <button
+                                        key={i}
+                                        type="button"
+                                        title={`Based on: "${s.headline}"`}
+                                        onClick={() =>
+                                          setCloseLocals((prev) => ({
+                                            ...prev,
+                                            [p.proposalId]: formatDateTimeLocal(s.date),
+                                          }))
+                                        }
+                                        className="text-[11px] px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-600 hover:bg-amber-500/20 transition-colors border border-amber-500/20 cursor-pointer"
+                                      >
+                                        {s.date.toLocaleDateString('en-US', {
+                                          month: 'short',
+                                          day: 'numeric',
+                                          year: 'numeric',
+                                        })}
+                                      </button>
+                                    ))}
+                                  </div>
+                                </div>
+                              </div>
+                            )
+                          })()}
                           <p className="text-[11px] text-muted-foreground">
                             Must be after now — on-chain <code className="font-mono">createEvent</code> rejects past close times.
                           </p>
