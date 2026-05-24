@@ -39,11 +39,33 @@ def _row_key(row: dict) -> tuple:
 
 def _write_fills(market_id: int, fills: list[dict]) -> None:
     payload = {"fills": fills, "updatedAtUtc": datetime.now(timezone.utc).isoformat()}
-    store.write_json(_FILLS_JSON.format(market_id=market_id), payload)
+    json_path = _FILLS_JSON.format(market_id=market_id)
+    parquet_path = _FILLS_PARQUET.format(market_id=market_id)
     try:
-        store.write_parquet(_FILLS_PARQUET.format(market_id=market_id), fills)
+        store.write_json(json_path, payload)
     except Exception as e:
-        print(f"[event_listener] parquet write failed for market {market_id}: {e}")
+        import traceback
+        # JSON write is fatal — re-raise so the caller can decide what to do.
+        # If we swallowed this we'd silently lose data and the indexer cursor
+        # would still advance, which is what bit us during the May 2026 bring-up.
+        print(
+            f"[event_listener] JSON write FAILED market={market_id} path={json_path}: {e}\n"
+            f"{traceback.format_exc()}",
+            flush=True,
+        )
+        raise
+    try:
+        store.write_parquet(parquet_path, fills)
+    except Exception as e:
+        import traceback
+        # Parquet is best-effort — the JSON copy is authoritative, so we log
+        # with a full traceback and continue. BigQuery will simply not see
+        # this market until the next successful parquet write.
+        print(
+            f"[event_listener] parquet write FAILED market={market_id} path={parquet_path}: {e}\n"
+            f"{traceback.format_exc()}",
+            flush=True,
+        )
 
 
 def _load_existing_fills(market_id: int) -> list[dict]:

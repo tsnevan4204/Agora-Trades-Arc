@@ -31,15 +31,40 @@ def _load_manifest() -> dict[str, Any]:
 
 
 def load_abi(contract_name: str, chain_id: str | None = None) -> list[dict[str, Any]]:
-    """Return the ABI for a contract. Searches all networks if chain_id is None."""
+    """Return the ABI for a contract.
+
+    If ``chain_id`` is given, return the ABI for that specific network and
+    raise if not present. If omitted, prefer non-hardhat networks (anything
+    other than ``31337``) so production callers don't accidentally pick up
+    the local-dev ABI shape — which can differ from the deployed contract
+    if the event signature was renamed (e.g. legacy ``totalUSDTWei`` vs
+    current ``totalCollateral`` for ``Exchange.OfferFilled``).
+
+    Production callers SHOULD pass ``chain_id`` explicitly; the preference
+    here is defence-in-depth so a missing kwarg doesn't silently break the
+    indexer.
+    """
     manifest = _load_manifest()
-    for cid, net in manifest["networks"].items():
-        if chain_id and cid != str(chain_id):
-            continue
+    if chain_id is not None:
+        net = manifest["networks"].get(str(chain_id))
+        if not net:
+            raise KeyError(f"Network chain_id={chain_id} not found in manifest")
+        entry = net["contracts"].get(contract_name)
+        if not entry:
+            raise KeyError(
+                f"Contract {contract_name!r} not found on chain_id={chain_id}"
+            )
+        return entry["abi"]
+    # Prefer non-hardhat networks for ambient lookups.
+    networks = sorted(
+        manifest["networks"].items(),
+        key=lambda kv: (kv[0] == "31337", kv[0]),
+    )
+    for cid, net in networks:
         entry = net["contracts"].get(contract_name)
         if entry:
             return entry["abi"]
-    raise KeyError(f"Contract {contract_name!r} not found in manifest (chain_id={chain_id})")
+    raise KeyError(f"Contract {contract_name!r} not found in any manifest network")
 
 
 def get_address(contract_name: str, chain_id: str) -> str:

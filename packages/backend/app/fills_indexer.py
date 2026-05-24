@@ -59,7 +59,18 @@ from .storage import store
 
 
 _STATE_PATH = "state/fills_indexer.json"
-_EXCHANGE_ABI = load_abi("Exchange")
+
+# Defer ABI load until we know the actual connected chain id, so we never
+# accidentally pick up a hardhat-local ABI shape in production. See the
+# OfferFilled regression notes in PR notes — the chain 31337 entry historically
+# used `totalUSDTWei`, while chain 5042002 (Arc) uses `totalCollateral`.
+_EXCHANGE_ABI_BY_CHAIN: dict[int, list] = {}
+
+
+def _exchange_abi_for(chain_id: int) -> list:
+    if chain_id not in _EXCHANGE_ABI_BY_CHAIN:
+        _EXCHANGE_ABI_BY_CHAIN[chain_id] = load_abi("Exchange", str(chain_id))
+    return _EXCHANGE_ABI_BY_CHAIN[chain_id]
 
 
 # ── env helpers ──────────────────────────────────────────────────────────────
@@ -126,7 +137,7 @@ def _write_cursor(block: int, **extra: Any) -> None:
 def _exchange_contract(w3: Web3) -> Contract:
     return w3.eth.contract(
         address=Web3.to_checksum_address(settings.exchange_address),
-        abi=_EXCHANGE_ABI,
+        abi=_exchange_abi_for(int(w3.eth.chain_id)),
     )
 
 
@@ -156,6 +167,13 @@ def _log_to_row(exchange: Contract, log: Any) -> dict | None:
     except Exception as e:
         print(f"[fills_indexer] could not resolve offer #{offer_id}: {e}")
         return None
+    # `totalCollateral` is the field name from the current Exchange.sol
+    # (chain 5042002). Older ABIs called the same field `totalUSDTWei` —
+    # tolerate either so an accidental ABI mismatch only loses an attribute,
+    # not the whole tick.
+    total_collateral = getattr(
+        log.args, "totalCollateral", getattr(log.args, "totalUSDTWei", 0)
+    )
     return {
         "kind": "OfferFilled",
         "offerId": offer_id,
@@ -166,7 +184,7 @@ def _log_to_row(exchange: Contract, log: Any) -> dict | None:
         # bigints serialise cleanly as strings so we don't lose precision in JSON
         "fillAmount": str(int(log.args.fillAmount)),
         "price": int(log.args.price),
-        "totalCollateral": str(int(log.args.totalCollateral)),
+        "totalCollateral": str(int(total_collateral)),
         "blockNumber": int(log.blockNumber),
         "txHash": log.transactionHash.hex(),
         "logIndex": int(log.logIndex),
