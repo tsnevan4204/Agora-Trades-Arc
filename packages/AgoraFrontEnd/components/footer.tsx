@@ -51,7 +51,7 @@ export function Footer() {
               <span className="font-serif text-2xl font-semibold tracking-tight">Agora</span>
             </Link>
             <p className="text-sm text-muted-foreground mb-6 max-w-xs">
-              Institutional-grade prediction markets with real-time crowd-implied probabilities on BNB Chain.
+              Institutional-grade prediction markets with real-time crowd-implied probabilities on Circle Arc testnet.
             </p>
             {/* Social links */}
             <div className="flex items-center gap-4">

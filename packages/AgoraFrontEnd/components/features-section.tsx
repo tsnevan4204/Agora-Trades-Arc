@@ -28,7 +28,7 @@ const features = [
   {
     icon: Zap,
     title: 'Instant Settlement',
-    description: 'Built on BNB Chain for sub-second finality. Markets resolve automatically with on-chain verification.',
+    description: 'Built on Circle Arc testnet for sub-second finality. Markets resolve automatically with on-chain verification.',
     accent: 'from-accent/20 to-primary/20',
   },
   {

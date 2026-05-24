@@ -24,7 +24,7 @@ const showcaseItems: ShowcaseItem[] = [
   {
     label: 'Avg Settlement',
     value: '< 2s',
-    description: 'Sub-second finality on BNB Chain ensures instant trade execution and settlement.',
+    description: 'Sub-second finality on Circle Arc testnet ensures instant trade execution and settlement.',
   },
   {
     label: 'Uptime',

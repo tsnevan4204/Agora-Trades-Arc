@@ -43,7 +43,17 @@ class AdminLoginResponse(BaseModel):
     expiresAt: int
     username: str
 
-app = FastAPI(title="Agora Backend", version="0.1.0")
+app = FastAPI(
+    title="Agora Data API",
+    version="0.1.0",
+    description=(
+        "Public, read-only data endpoints for the Agora prediction-market platform. "
+        "All trading and order management happens **on-chain** — interact with the "
+        "deployed Exchange and Manager contracts directly (addresses available from "
+        "`/health`). This API only exposes indexed historical data: trades, "
+        "orderbook snapshots, market metadata, proposals, and resolutions."
+    ),
+)
 
 
 # Start the on-chain OfferFilled indexer alongside the API server. The
@@ -99,7 +109,7 @@ def health() -> dict:
     }
 
 
-@app.post("/admin/login", response_model=AdminLoginResponse)
+@app.post("/admin/login", response_model=AdminLoginResponse, include_in_schema=False)
 def admin_login(body: AdminLoginRequest) -> AdminLoginResponse:
     """Exchange env-driven username/password for a short-lived HMAC bearer token."""
     if not admin_auth_configured():
@@ -116,19 +126,19 @@ def admin_login(body: AdminLoginRequest) -> AdminLoginResponse:
     return AdminLoginResponse(token=token, expiresAt=exp, username=body.username)
 
 
-@app.get("/admin/me")
+@app.get("/admin/me", include_in_schema=False)
 def admin_me(principal: AdminPrincipal = Depends(require_admin)) -> dict:
     """Cheap endpoint the frontend can hit on mount to validate a stored token."""
     return {"username": principal.username, "expiresAt": principal.expires_at}
 
 
-@app.post("/proposals")
+@app.post("/proposals", include_in_schema=False)
 def create_proposal(proposal: EventProposal) -> dict:
     store.write_json(f"proposals/{proposal.proposalId}.json", proposal.model_dump(mode="json"))
     return {"saved": True, "proposalId": proposal.proposalId}
 
 
-@app.post("/proposals/{proposal_id}/approve")
+@app.post("/proposals/{proposal_id}/approve", include_in_schema=False)
 def approve_proposal(
     proposal_id: str,
     body: ProposalApproveRequest,
@@ -193,7 +203,7 @@ def approve_proposal(
     return {"approved": True, "proposalId": proposal_id, **raw["onChain"]}
 
 
-@app.post("/proposals/{proposal_id}/reject")
+@app.post("/proposals/{proposal_id}/reject", include_in_schema=False)
 def reject_proposal(
     proposal_id: str,
     body: ProposalRejectRequest,
@@ -218,13 +228,13 @@ def get_orders(market_id: int) -> dict:
     return {"orders": list_orders(market_id)}
 
 
-@app.post("/orders")
+@app.post("/orders", include_in_schema=False)
 def post_order(order: OffchainOrder) -> dict:
     upsert_order(order)
     return {"saved": True, "orderId": order.orderId}
 
 
-@app.delete("/orders/{market_id}/{order_id}")
+@app.delete("/orders/{market_id}/{order_id}", include_in_schema=False)
 def remove_order(market_id: int, order_id: str) -> dict:
     """Drop an order from the off-chain mirror.
 
@@ -262,7 +272,7 @@ def get_proposal(proposal_id: str) -> dict:
     return payload
 
 
-@app.post("/resolution/resolve/{event_id}")
+@app.post("/resolution/resolve/{event_id}", include_in_schema=False)
 def resolve_markets(
     event_id: int,
     body: AdminResolveRequest,
@@ -320,7 +330,7 @@ def resolve_markets(
     }
 
 
-@app.post("/relay/forward", response_model=RelayExecuteResponse)
+@app.post("/relay/forward", response_model=RelayExecuteResponse, include_in_schema=False)
 def relay_forward(body: RelayForwardRequest) -> RelayExecuteResponse:
     result = relay_forward_request(body)
     return RelayExecuteResponse(ok=result.ok, txHash=result.tx_hash, reason=result.reason)
